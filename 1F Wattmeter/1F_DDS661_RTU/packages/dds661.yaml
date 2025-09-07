@@ -1,0 +1,486 @@
+# DDS661 Wattmeter Packages
+
+
+#############################################
+# DDS661 WATTMETER - MODBUS REGISTER SUMMARY
+#############################################
+#
+# Measurement registers (function 0x04 READ):
+#   0x0000 - Voltage (FP32, V)
+#   0x0008 - Current (FP32, A)
+#   0x0012 - Active Power (FP32, kW)
+#   0x002A - Power Factor (FP32)
+#   0x0036 - Frequency (FP32, Hz)
+#   0x0100 - Total Energy (FP32, kWh), total_increasing
+#
+# Configuration registers (function 0x03 HOLDING), FP32, 2 registers wide:
+#   0x0000 - Baud rate (float): 1200 / 2400 / 4800 / 9600
+#            FP32 bytes (MSB..LSB):
+#              1200 -> 0x44 0x96 0x00 0x00
+#              2400 -> 0x45 0x16 0x00 0x00
+#              4800 -> 0x45 0x96 0x00 0x00
+#              9600 -> 0x46 0x16 0x00 0x00
+#   0x0002 - Parity (float): 0=EVEN (default), 1=ODD, 2=NONE
+#            FP32 bytes (MSB..LSB):
+#              0 -> 0x00 0x00 0x00 0x00
+#              1 -> 0x3F 0x80 0x00 0x00
+#              2 -> 0x40 0x00 0x00 0x00
+#   0x0008 - Device address (float): 1 (default) - 247
+#
+# Write format:
+#   - Values must be sent as FP32 split into two 16-bit registers (big-endian: MSW first, then LSW).
+#   - Use Modbus write-multiple (function 0x10).
+#
+# Notes:
+#   - Changing parity or baud requires aligning ESPHome UART settings and a device restart.
+#   - After changing device address, the controller must target the new address.
+#   - This configuration reads measurements via READ and settings via HOLDING as listed above.
+######################################################################################################################
+
+#############################################
+# ENTITIES OVERVIEW (MODBUS-RELATED)
+#############################################
+#
+# Sensors (modbus_controller / measurements):
+# - DDS661 Voltage (id: dds661_voltage)         READ 0x0000, FP32, V, throttle 30s
+# - DDS661 Current                               READ 0x0008, FP32, A, throttle 30s
+# - DDS661 Active Power                          READ 0x0012, FP32, kW, throttle 30s
+# - DDS661 Power Factor                          READ 0x002A, FP32, throttle 30s
+# - DDS661 Frequency                              READ 0x0036, FP32, Hz, throttle 30s
+# - DDS661 Total Energy                           READ 0x0100, FP32, kWh, throttle 30s
+#
+# Config sensors (holding registers; diagnostic):
+# - DDS661 Current Baud Rate                      HOLDING 0x0000, FP32, bps
+# - DDS661 Current Parity (id: dds661_current_parity)
+#                                                 HOLDING 0x0002, FP32 (0=EVEN,1=ODD,2=NONE)
+# - DDS661 Current Address (id: dds661_current_address)
+#                                                 HOLDING 0x0008, FP32 (1..247)
+#
+# Text sensors (diagnostic):
+# - DDS661 Parity Text                            Derived from dds661_current_parity (EVEN/ODD/NONE)
+# - DDS661 Controller Address (id: dds661_controller_address)
+# - DDS661 Scanner Results (id: dds661_scanner_results)
+# - DDS661 Long Scan State (id: dds661_long_scan_state)
+# - DDS661 Last Scan Address (id: dds661_last_scan_address)
+#
+# Controls (diagnostic):
+# Number:
+# - DDS661 Target Address (id: dds661_target_address)    1..247 (optimistic)
+# Select:
+# - DDS661 Target Parity (id: dds661_target_parity)      EVEN/ODD/NONE (optimistic)
+# Buttons:
+# - DDS661 Change Device Address                          Write 0x0008 (FP32) to change device address
+# - DDS661 Change Parity                                  Write 0x0002 (FP32) to set parity (0/1/2)
+# - DDS661 Set Controller Address                         Set controller target address (runtime only)
+# - DDS661 Scan MODBUS                                    Simple scan (1..10), READ 0x0000 voltage
+# - DDS661 Long Scan Start / Stop                         Start/stop asynchronous full scan (logic in main config)
+#
+# Globals (persistent state):
+# - controller_current_address (uint8, restore)
+# - long_scan_running (bool, restore)
+# - long_scan_current_addr (uint8, restore)
+# - long_scan_found_addr (uint8, restore)
+# - long_scan_device_found_time (uint32)
+#
+# Notes:
+# - Long scan timing and evaluation are implemented in the main YAML (intervals).
+# - All modbus-related entities are marked entity_category: diagnostic to group under Diagnostics in HA.
+######################################################################################################################
+
+# ===== MODBUS Controller =====
+modbus_controller:
+  - id: wattmeter_cerpadlo
+    address: 1
+    modbus_id: rs485
+    setup_priority: -10
+    update_interval: 5s
+    command_throttle: 100ms
+    max_cmd_retries: 3
+
+# ===== Základní měřící senzory =====
+sensor:
+  # Napětí (0x0000)
+  - platform: modbus_controller
+    modbus_controller_id: wattmeter_cerpadlo
+    name: "DDS661 Voltage"
+    id: dds661_voltage
+    address: 0x0000
+    register_count: 2
+    unit_of_measurement: "V"
+    value_type: FP32
+    register_type: read
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 1
+    filters:
+      - throttle: 30s
+
+  # Proud (0x0008)
+  - platform: modbus_controller
+    modbus_controller_id: wattmeter_cerpadlo
+    name: "DDS661 Current"
+    address: 0x0008
+    register_count: 2
+    unit_of_measurement: "A"
+    value_type: FP32
+    register_type: read
+    device_class: current
+    state_class: measurement
+    accuracy_decimals: 2
+    filters:
+      - throttle: 30s
+
+  # Aktivní výkon (0x0012)
+  - platform: modbus_controller
+    modbus_controller_id: wattmeter_cerpadlo
+    name: "DDS661 Active Power"
+    address: 0x0012
+    register_count: 2
+    unit_of_measurement: "kW"
+    value_type: FP32
+    register_type: read
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 3
+    filters:
+      - throttle: 30s
+
+  # Účiník (0x002A)
+  - platform: modbus_controller
+    modbus_controller_id: wattmeter_cerpadlo
+    name: "DDS661 Power Factor"
+    address: 0x002A
+    register_count: 2
+    value_type: FP32
+    register_type: read
+    device_class: power_factor
+    state_class: measurement
+    accuracy_decimals: 2
+    filters:
+      - throttle: 30s
+
+  # Frekvence (0x0036)
+  - platform: modbus_controller
+    modbus_controller_id: wattmeter_cerpadlo
+    name: "DDS661 Frequency"
+    address: 0x0036
+    register_count: 2
+    unit_of_measurement: "Hz"
+    value_type: FP32
+    register_type: read
+    device_class: frequency
+    state_class: measurement
+    accuracy_decimals: 1
+    filters:
+      - throttle: 30s
+
+  # Celková energie (0x0100)
+  - platform: modbus_controller
+    modbus_controller_id: wattmeter_cerpadlo
+    name: "DDS661 Total Energy"
+    address: 0x0100
+    register_count: 2
+    unit_of_measurement: "kWh"
+    value_type: FP32
+    register_type: read
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 2
+    filters:
+      - throttle: 30s
+
+# ===== Konfigurační senzory (čtení nastavení zařízení) =====
+  # Aktuální baud rate (0x0000 - holding register)
+  - platform: modbus_controller
+    modbus_controller_id: wattmeter_cerpadlo
+    name: "DDS661 Current Baud Rate"
+    address: 0x0000
+    register_count: 2
+    unit_of_measurement: "bps"
+    value_type: FP32
+    register_type: holding
+    accuracy_decimals: 0
+    entity_category: diagnostic
+
+  # Aktuální parity (0x0002 - holding register)
+  - platform: modbus_controller
+    modbus_controller_id: wattmeter_cerpadlo
+    name: "DDS661 Current Parity"
+    id: dds661_current_parity
+    address: 0x0002
+    register_count: 2
+    value_type: FP32
+    register_type: holding
+    accuracy_decimals: 0
+    entity_category: diagnostic
+
+  # Aktuální MODBUS adresa (0x0008 - holding register)
+  - platform: modbus_controller
+    modbus_controller_id: wattmeter_cerpadlo
+    name: "DDS661 Current Address"
+    id: dds661_current_address
+    address: 0x0008
+    register_count: 2
+    value_type: FP32
+    register_type: holding
+    accuracy_decimals: 0
+    entity_category: diagnostic
+
+# ===== Diagnostické senzory =====
+  # Uptime jako text (14d 8h 23m)
+  - platform: uptime
+    name: "DDS661 Uptime"
+    id: uptime_seconds
+    unit_of_measurement: "s"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+
+# ===== Textové senzory =====
+text_sensor:
+  # Parity jako text
+  - platform: template
+    name: "DDS661 Parity Text"
+    lambda: |-
+      auto parity = id(dds661_current_parity).state;
+      char parity_str[10];
+      if (parity == 0.0f) sprintf(parity_str, "EVEN");
+      else if (parity == 1.0f) sprintf(parity_str, "ODD");
+      else if (parity == 2.0f) sprintf(parity_str, "NONE");
+      else sprintf(parity_str, "UNKNOWN");
+      return {parity_str};
+    entity_category: diagnostic
+
+  # Uptime jako text (14d 8h 23m)
+  - platform: template
+    name: "DDS661 Uptime Text"
+    lambda: |-
+      auto uptime_sec = (int)id(uptime_seconds).state;
+      int days = uptime_sec / 86400;
+      int hours = (uptime_sec % 86400) / 3600;
+      int minutes = (uptime_sec % 3600) / 60;
+      
+      char uptime_str[20];
+      sprintf(uptime_str, "%dd %dh %dm", days, hours, minutes);
+      return {uptime_str};
+    entity_category: diagnostic
+
+# WiFi/LAN senzory odstraněny - nejsou potřeba
+
+  # Controller address
+  - platform: template
+    name: "DDS661 Controller Address"
+    id: dds661_controller_address
+    lambda: |-
+      char addr_str[10];
+      sprintf(addr_str, "%d", (int)id(controller_current_address));
+      return {addr_str};
+    entity_category: diagnostic
+
+  # Scanner výsledky
+  - platform: template
+    name: "DDS661 Scanner Results"
+    id: dds661_scanner_results
+    entity_category: diagnostic
+
+  # Long scan stav
+  - platform: template
+    name: "DDS661 Long Scan State"
+    id: dds661_long_scan_state
+    entity_category: diagnostic
+
+  # Poslední scan adresa
+  - platform: template
+    name: "DDS661 Last Scan Address"
+    id: dds661_last_scan_address
+    entity_category: diagnostic
+
+# ===== Uživatelské ovládací prvky =====
+number:
+  # Nastavení cílové adresy
+  - platform: template
+    name: "DDS661 Target Address"
+    id: dds661_target_address
+    min_value: 1
+    max_value: 247
+    step: 1
+    initial_value: 2
+    mode: box
+    unit_of_measurement: ""
+    optimistic: true
+    entity_category: diagnostic
+
+select:
+  # Parity target selection (EVEN/ODD/NONE)
+  - platform: template
+    name: "DDS661 Target Parity"
+    id: dds661_target_parity
+    options:
+      - EVEN
+      - ODD
+      - NONE
+    optimistic: true
+    restore_value: true
+    entity_category: diagnostic
+
+button:
+  # Změna adresy zařízení
+  - platform: template
+    name: "DDS661 Change Device Address"
+    on_press:
+      then:
+        - lambda: |-
+            // Change device address via MODBUS
+            auto target_addr = id(dds661_target_address).state;
+            auto addr_float = (float)target_addr;
+
+            // Convert to IEEE-754 float
+            uint8_t data[4];
+            memcpy(data, &addr_float, 4);
+
+            // Big-endian for MODBUS
+            uint16_t word1 = (data[3] << 8) | data[2];
+            uint16_t word2 = (data[1] << 8) | data[0];
+
+            std::vector<uint16_t> addr_vector = {word1, word2};
+            auto cmd = esphome::modbus_controller::ModbusCommandItem::create_write_multiple_command(
+              id(wattmeter_cerpadlo), 0x0008, 2, addr_vector);
+
+            delay(300);
+            id(wattmeter_cerpadlo)->queue_command(cmd);
+
+            // Use sprintf for message
+            char msg[50];
+            sprintf(msg, "Device address changed to %.0f", target_addr);
+            ESP_LOGI("DDS661", msg);
+    entity_category: diagnostic
+
+  # MODBUS Scanner (jednoduchý)
+  - platform: template
+    name: "DDS661 Scan MODBUS"
+    on_press:
+      then:
+        - lambda: |-
+            // Simple address scanner 1-10
+            id(dds661_scanner_results).publish_state("Scanning addresses 1-10...");
+
+            for (int addr = 1; addr <= 10; addr++) {
+              // Temporarily set controller address
+              id(wattmeter_cerpadlo)->set_address(addr);
+              delay(200);
+
+              // Try to read voltage
+              auto voltage_cmd = esphome::modbus_controller::ModbusCommandItem::create_read_command(
+                id(wattmeter_cerpadlo), esphome::modbus_controller::ModbusRegisterType::READ, 0x0000, 2);
+
+              id(wattmeter_cerpadlo)->queue_command(voltage_cmd);
+              delay(300);
+
+              // Check result
+              auto voltage = id(dds661_voltage).state;
+              if (voltage > 200.0f && voltage < 260.0f) {
+                char result[100];
+                sprintf(result, "FOUND: Address %d - DDS661", addr);
+                id(dds661_scanner_results).publish_state(result);
+                ESP_LOGI("DDS661_Scanner", "Device found at address %d", addr);
+                return;
+              }
+            }
+
+            id(dds661_scanner_results).publish_state("SCAN RESULTS: No device found");
+            ESP_LOGI("DDS661_Scanner", "Simple scan completed. No devices found");
+    entity_category: diagnostic
+
+  # Long Scan Start
+  - platform: template
+    name: "DDS661 Long Scan Start"
+    on_press:
+      then:
+        - lambda: |-
+            id(long_scan_running) = true;
+            id(long_scan_current_addr) = 1;
+            id(dds661_long_scan_state).publish_state("Starting long scan...");
+            ESP_LOGI("DDS661", "Long scan started");
+    entity_category: diagnostic
+
+  # Long Scan Stop
+  - platform: template
+    name: "DDS661 Long Scan Stop"
+    on_press:
+      then:
+        - lambda: |-
+            id(long_scan_running) = false;
+            id(dds661_long_scan_state).publish_state("Long scan stopped");
+            ESP_LOGI("DDS661", "Long scan stopped");
+    entity_category: diagnostic
+
+  # Set Controller Address
+  - platform: template
+    name: "DDS661 Set Controller Address"
+    on_press:
+      then:
+        - lambda: |-
+            auto new_addr = (uint8_t)id(dds661_target_address).state;
+            id(wattmeter_cerpadlo)->set_address(new_addr);
+            id(controller_current_address) = new_addr;
+            char msg[50];
+            sprintf(msg, "Controller now reading from address %d", new_addr);
+            ESP_LOGI("DDS661", msg);
+    entity_category: diagnostic
+
+  # Change device parity using selected option
+  - platform: template
+    name: "DDS661 Change Parity"
+    on_press:
+      then:
+        - lambda: |-
+            // Change device parity via register 0x0002 (FP32: 0=EVEN,1=ODD,2=NONE)
+            float new_parity = 0.0f;
+            std::string sel = id(dds661_target_parity).state;
+            if (sel == "EVEN") {
+              new_parity = 0.0f;
+            } else if (sel == "ODD") {
+              new_parity = 1.0f;
+            } else {
+              new_parity = 2.0f;
+            }
+
+            // Convert float to 2x16-bit words (big-endian) for Modbus write
+            uint8_t pbytes[4];
+            memcpy(pbytes, &new_parity, 4);
+            uint16_t word1 = (pbytes[3] << 8) | pbytes[2];
+            uint16_t word2 = (pbytes[1] << 8) | pbytes[0];
+            std::vector<uint16_t> parity_vector = {word1, word2};
+
+            auto set_parity_cmd = esphome::modbus_controller::ModbusCommandItem::create_write_multiple_command(
+              id(wattmeter_cerpadlo), 0x0002, 2, parity_vector);
+            id(wattmeter_cerpadlo)->queue_command(set_parity_cmd);
+
+            ESP_LOGI("DDS661", "Parity change requested to %s (%.0f)", sel.c_str(), new_parity);
+    entity_category: diagnostic
+
+# ===== Globální proměnné =====
+globals:
+  - id: controller_current_address
+    type: uint8_t
+    restore_value: true
+    initial_value: "1"
+
+  - id: long_scan_running
+    type: bool
+    restore_value: true
+    initial_value: "false"
+
+  - id: long_scan_current_addr
+    type: uint8_t
+    restore_value: true
+    initial_value: "1"
+
+  - id: long_scan_found_addr
+    type: uint8_t
+    restore_value: true
+    initial_value: "0"
+
+  - id: long_scan_device_found_time
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
