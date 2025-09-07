@@ -1,8 +1,6 @@
-
 #############################################
 # Kincony A2S GPIO Definition
 #############################################
-#
 # GPIO15	Relay1
 # GPIO2	  Relay2
 # GPIO33	1-wire GPIO-1
@@ -11,92 +9,7 @@
 # GPIO32	RS485-TXD
 # GPIO34	GSM-RXD
 # GPIO13	GSM-TXD
-#
 #############################################
-# DDS661 WATTMETER - MODBUS REGISTER SUMMARY
-#############################################
-#
-# Measurement registers (function 0x04 READ):
-#   0x0000 - Voltage (FP32, V)
-#   0x0008 - Current (FP32, A)
-#   0x0012 - Active Power (FP32, kW)
-#   0x002A - Power Factor (FP32)
-#   0x0036 - Frequency (FP32, Hz)
-#   0x0100 - Total Energy (FP32, kWh), total_increasing
-#
-# Configuration registers (function 0x03 HOLDING), FP32, 2 registers wide:
-#   0x0000 - Baud rate (float): 1200 / 2400 / 4800 / 9600
-#            FP32 bytes (MSB..LSB):
-#              1200 -> 0x44 0x96 0x00 0x00
-#              2400 -> 0x45 0x16 0x00 0x00
-#              4800 -> 0x45 0x96 0x00 0x00
-#              9600 -> 0x46 0x16 0x00 0x00
-#   0x0002 - Parity (float): 0=EVEN (default), 1=ODD, 2=NONE
-#            FP32 bytes (MSB..LSB):
-#              0 -> 0x00 0x00 0x00 0x00
-#              1 -> 0x3F 0x80 0x00 0x00
-#              2 -> 0x40 0x00 0x00 0x00
-#   0x0008 - Device address (float): 1 (default) - 247
-#
-# Write format:
-#   - Values must be sent as FP32 split into two 16-bit registers (big-endian: MSW first, then LSW).
-#   - Use Modbus write-multiple (function 0x10).
-#
-# Notes:
-#   - Changing parity or baud requires aligning ESPHome UART settings and a device restart.
-#   - After changing device address, the controller must target the new address.
-#   - This configuration reads measurements via READ and settings via HOLDING as listed above.
-######################################################################################################################
-
-#############################################
-# ENTITIES OVERVIEW (MODBUS-RELATED)
-#############################################
-#
-# Sensors (modbus_controller / measurements):
-# - DDS661 Voltage (id: dds661_voltage)         READ 0x0000, FP32, V, throttle 30s
-# - DDS661 Current                               READ 0x0008, FP32, A, throttle 30s
-# - DDS661 Active Power                          READ 0x0012, FP32, kW, throttle 30s
-# - DDS661 Power Factor                          READ 0x002A, FP32, throttle 30s
-# - DDS661 Frequency                              READ 0x0036, FP32, Hz, throttle 30s
-# - DDS661 Total Energy                           READ 0x0100, FP32, kWh, throttle 30s
-#
-# Config sensors (holding registers; diagnostic):
-# - DDS661 Current Baud Rate                      HOLDING 0x0000, FP32, bps
-# - DDS661 Current Parity (id: dds661_current_parity)
-#                                                 HOLDING 0x0002, FP32 (0=EVEN,1=ODD,2=NONE)
-# - DDS661 Current Address (id: dds661_current_address)
-#                                                 HOLDING 0x0008, FP32 (1..247)
-#
-# Text sensors (diagnostic):
-# - DDS661 Parity Text                            Derived from dds661_current_parity (EVEN/ODD/NONE)
-# - DDS661 Controller Address (id: dds661_controller_address)
-# - DDS661 Scanner Results (id: dds661_scanner_results)
-# - DDS661 Long Scan State (id: dds661_long_scan_state)
-# - DDS661 Last Scan Address (id: dds661_last_scan_address)
-#
-# Controls (diagnostic):
-# Number:
-# - DDS661 Target Address (id: dds661_target_address)    1..247 (optimistic)
-# Select:
-# - DDS661 Target Parity (id: dds661_target_parity)      EVEN/ODD/NONE (optimistic)
-# Buttons:
-# - DDS661 Change Device Address                          Write 0x0008 (FP32) to change device address
-# - DDS661 Change Parity                                  Write 0x0002 (FP32) to set parity (0/1/2)
-# - DDS661 Set Controller Address                         Set controller target address (runtime only)
-# - DDS661 Scan MODBUS                                    Simple scan (1..10), READ 0x0000 voltage
-# - DDS661 Long Scan Start / Stop                         Start/stop asynchronous full scan (logic in main config)
-#
-# Globals (persistent state):
-# - controller_current_address (uint8, restore)
-# - long_scan_running (bool, restore)
-# - long_scan_current_addr (uint8, restore)
-# - long_scan_found_addr (uint8, restore)
-# - long_scan_device_found_time (uint32)
-#
-# Notes:
-# - Long scan timing and evaluation are implemented in the main YAML (intervals).
-# - All modbus-related entities are marked entity_category: diagnostic to group under Diagnostics in HA.
-######################################################################################################################
 
 # Include external package
 packages:
