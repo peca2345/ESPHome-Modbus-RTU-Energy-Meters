@@ -1,1 +1,250 @@
 
+#############################################
+# Kincony A2S GPIO Definition
+#############################################
+#
+# GPIO15	Relay1
+# GPIO2	  Relay2
+# GPIO33	1-wire GPIO-1
+# GPIO14	1-wire GPIO-2
+# GPIO35	RS485-RXD
+# GPIO32	RS485-TXD
+# GPIO34	GSM-RXD
+# GPIO13	GSM-TXD
+#
+#############################################
+# DDS661 WATTMETER - MODBUS REGISTER SUMMARY
+#############################################
+#
+# Measurement registers (function 0x04 READ):
+#   0x0000 - Voltage (FP32, V)
+#   0x0008 - Current (FP32, A)
+#   0x0012 - Active Power (FP32, kW)
+#   0x002A - Power Factor (FP32)
+#   0x0036 - Frequency (FP32, Hz)
+#   0x0100 - Total Energy (FP32, kWh), total_increasing
+#
+# Configuration registers (function 0x03 HOLDING), FP32, 2 registers wide:
+#   0x0000 - Baud rate (float): 1200 / 2400 / 4800 / 9600
+#            FP32 bytes (MSB..LSB):
+#              1200 -> 0x44 0x96 0x00 0x00
+#              2400 -> 0x45 0x16 0x00 0x00
+#              4800 -> 0x45 0x96 0x00 0x00
+#              9600 -> 0x46 0x16 0x00 0x00
+#   0x0002 - Parity (float): 0=EVEN (default), 1=ODD, 2=NONE
+#            FP32 bytes (MSB..LSB):
+#              0 -> 0x00 0x00 0x00 0x00
+#              1 -> 0x3F 0x80 0x00 0x00
+#              2 -> 0x40 0x00 0x00 0x00
+#   0x0008 - Device address (float): 1 (default) - 247
+#
+# Write format:
+#   - Values must be sent as FP32 split into two 16-bit registers (big-endian: MSW first, then LSW).
+#   - Use Modbus write-multiple (function 0x10).
+#
+# Notes:
+#   - Changing parity or baud requires aligning ESPHome UART settings and a device restart.
+#   - After changing device address, the controller must target the new address.
+#   - This configuration reads measurements via READ and settings via HOLDING as listed above.
+######################################################################################################################
+
+#############################################
+# ENTITIES OVERVIEW (MODBUS-RELATED)
+#############################################
+#
+# Sensors (modbus_controller / measurements):
+# - DDS661 Voltage (id: dds661_voltage)         READ 0x0000, FP32, V, throttle 30s
+# - DDS661 Current                               READ 0x0008, FP32, A, throttle 30s
+# - DDS661 Active Power                          READ 0x0012, FP32, kW, throttle 30s
+# - DDS661 Power Factor                          READ 0x002A, FP32, throttle 30s
+# - DDS661 Frequency                              READ 0x0036, FP32, Hz, throttle 30s
+# - DDS661 Total Energy                           READ 0x0100, FP32, kWh, throttle 30s
+#
+# Config sensors (holding registers; diagnostic):
+# - DDS661 Current Baud Rate                      HOLDING 0x0000, FP32, bps
+# - DDS661 Current Parity (id: dds661_current_parity)
+#                                                 HOLDING 0x0002, FP32 (0=EVEN,1=ODD,2=NONE)
+# - DDS661 Current Address (id: dds661_current_address)
+#                                                 HOLDING 0x0008, FP32 (1..247)
+#
+# Text sensors (diagnostic):
+# - DDS661 Parity Text                            Derived from dds661_current_parity (EVEN/ODD/NONE)
+# - DDS661 Controller Address (id: dds661_controller_address)
+# - DDS661 Scanner Results (id: dds661_scanner_results)
+# - DDS661 Long Scan State (id: dds661_long_scan_state)
+# - DDS661 Last Scan Address (id: dds661_last_scan_address)
+#
+# Controls (diagnostic):
+# Number:
+# - DDS661 Target Address (id: dds661_target_address)    1..247 (optimistic)
+# Select:
+# - DDS661 Target Parity (id: dds661_target_parity)      EVEN/ODD/NONE (optimistic)
+# Buttons:
+# - DDS661 Change Device Address                          Write 0x0008 (FP32) to change device address
+# - DDS661 Change Parity                                  Write 0x0002 (FP32) to set parity (0/1/2)
+# - DDS661 Set Controller Address                         Set controller target address (runtime only)
+# - DDS661 Scan MODBUS                                    Simple scan (1..10), READ 0x0000 voltage
+# - DDS661 Long Scan Start / Stop                         Start/stop asynchronous full scan (logic in main config)
+#
+# Globals (persistent state):
+# - controller_current_address (uint8, restore)
+# - long_scan_running (bool, restore)
+# - long_scan_current_addr (uint8, restore)
+# - long_scan_found_addr (uint8, restore)
+# - long_scan_device_found_time (uint32)
+#
+# Notes:
+# - Long scan timing and evaluation are implemented in the main YAML (intervals).
+# - All modbus-related entities are marked entity_category: diagnostic to group under Diagnostics in HA.
+######################################################################################################################
+
+# Include external package
+packages:
+  dds661_wattmeter: !include packages/a2s-vodarna/wattmeter-dds661.yaml
+  a2s_main: !include packages/a2s-vodarna/a2s-main.yaml
+
+
+esphome:
+  name: a2s-vodarna
+  friendly_name: a2s-vodarna
+  on_boot:
+    priority: -100
+    then:
+      - lambda: |-
+          // Obnovení adresy controlleru z global
+          auto saved_addr = id(controller_current_address);
+          if (saved_addr >= 1 && saved_addr <= 247) {
+            id(wattmeter_cerpadlo)->set_address(saved_addr);
+            char msg[50];
+            sprintf(msg, "Controller address restored to %d", saved_addr);
+            ESP_LOGI("DDS661", msg);
+          }
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+logger:
+  logs:
+    modbus_controller: debug
+
+api:
+ota:
+  - platform: esphome
+
+ethernet:
+  type: LAN8720
+  mdc_pin: GPIO23
+  mdio_pin: GPIO18
+  clk_mode: GPIO17_OUT
+  phy_addr: 0
+
+i2c:
+- id: bus_a
+  sda: GPIO4
+  scl: GPIO5
+  scan: true
+
+time:
+- platform: homeassistant
+  id: homeassistant_time
+
+uart:
+  id: mod_bus
+  rx_pin: GPIO13 
+  tx_pin: GPIO32
+  baud_rate: 9600
+  stop_bits: 1
+  parity: EVEN
+
+modbus:
+  send_wait_time: 200ms
+  id: rs485
+
+
+################# Periodické úkoly pro DDS661
+interval:
+  # První interval - nastaví adresu a pošle příkaz
+  - interval: 3s
+    then:
+      - lambda: |-
+          // Long scan logika - nastavení adresy
+          if (!id(long_scan_running)) return;
+          
+          auto current_addr = id(long_scan_current_addr);
+          
+          // Nastav adresu controlleru
+          id(wattmeter_cerpadlo)->set_address(current_addr);
+          
+          // Kontrola, jestli už není scan zastaven PO nastavení adresy
+          if (!id(long_scan_running)) return;
+          
+          // Vyvolej cteni napeti na aktualni adrese (async)
+          auto voltage_cmd = esphome::modbus_controller::ModbusCommandItem::create_read_command(
+            id(wattmeter_cerpadlo), esphome::modbus_controller::ModbusRegisterType::READ, 0x0000, 2);
+          id(wattmeter_cerpadlo)->queue_command(voltage_cmd);
+          
+          char status[100];
+          sprintf(status, "Scanning address %d...", current_addr);
+          id(dds661_long_scan_state).publish_state(status);
+          
+          char addr_str[10];
+          sprintf(addr_str, "%d", current_addr);
+          id(dds661_last_scan_address).publish_state(addr_str);
+          
+          ESP_LOGI("MODBUS_SCANNER", "Starting scan of address %d", current_addr);
+
+  # Druhý interval - vyhodnotí výsledky
+  - interval: 4s
+    then:
+      - lambda: |-
+          if (!id(long_scan_running)) return;
+          
+          auto current_addr = id(long_scan_current_addr);
+          auto voltage = id(dds661_voltage).state;
+          
+          ESP_LOGI("MODBUS_SCANNER", "Address %d evaluation: voltage = %.2f", current_addr, voltage);
+          
+          // Kontrola, jestli jsou data validní a realistická
+          if (!isnan(voltage) && voltage > 200.0f && voltage < 260.0f) {
+              // Našli jsme zařízení - ale počkej ještě jeden cyklus pro potvrzení
+              if (id(long_scan_found_addr) == current_addr) {
+                  // Druhé potvrzení - skutečně jsme našli zařízení
+                  id(long_scan_running) = false;
+                  id(wattmeter_cerpadlo)->set_address(current_addr);
+                  id(controller_current_address) = current_addr;
+                  
+                  char found_msg[100];
+                  sprintf(found_msg, "Device confirmed at address %d! (voltage: %.1fV)", current_addr, voltage);
+                  id(dds661_long_scan_state).publish_state(found_msg);
+                  ESP_LOGI("DDS661", "Device confirmed at address %d", current_addr);
+                  return;
+              } else {
+                  // První nález validních dat - ulož pro potvrzení
+                  id(long_scan_found_addr) = current_addr;
+                  ESP_LOGI("MODBUS_SCANNER", "Potential device at address %d, waiting for confirmation", current_addr);
+                  return; // Počkej na potvrzení v dalším cyklu
+              }
+          } else {
+              // Žádná validní data
+              id(long_scan_found_addr) = 0; // Reset nálezu
+          }
+          
+          // Pokračuj na další adresu pouze pokud scan stále běží
+          if (id(long_scan_running)) {
+              if (current_addr < 247) {
+                  id(long_scan_current_addr) = current_addr + 1;
+                  ESP_LOGI("MODBUS_SCANNER", "Moving to next address: %d", current_addr + 1);
+              } else {
+                  // Scan dokončen
+                  id(long_scan_running) = false;
+                  id(dds661_long_scan_state).publish_state("Long scan completed - no device found");
+                  ESP_LOGI("DDS661", "Long scan completed - no device found");
+              }
+          }
+
+
+
+
+
