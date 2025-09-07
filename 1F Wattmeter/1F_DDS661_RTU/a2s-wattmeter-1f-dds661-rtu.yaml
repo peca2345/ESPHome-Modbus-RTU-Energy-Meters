@@ -13,13 +13,13 @@
 
 # Include external package
 packages:
-  dds661_wattmeter: !include packages/a2s-vodarna/wattmeter-dds661.yaml
-  a2s_main: !include packages/a2s-vodarna/a2s-main.yaml
+  dds661_wattmeter: !include packages/dds661.yaml
+  a2s_main: !include packages/esp_kincony_a2s.yaml
 
 
 esphome:
-  name: a2s-vodarna
-  friendly_name: a2s-vodarna
+  name: a2s-wattmeter-1f-dds661-rtu
+  friendly_name: a2s-wattmeter-1f-dds661-rtu
   on_boot:
     priority: -100
     then:
