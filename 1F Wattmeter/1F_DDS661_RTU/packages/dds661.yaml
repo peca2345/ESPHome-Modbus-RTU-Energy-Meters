@@ -134,16 +134,17 @@ sensor:
   - platform: modbus_controller
     modbus_controller_id: wattmeter_cerpadlo
     name: "DDS661 Active Power"
+    id: dds661_active_power
     address: 0x0012
     register_count: 2
-    unit_of_measurement: "kW"
+    unit_of_measurement: "W"
     value_type: FP32
     register_type: read
     device_class: power
     state_class: measurement
-    accuracy_decimals: 3
+    accuracy_decimals: 0
     filters:
-      - throttle: 30s
+      - throttle: 5s
 
   # Účiník (0x002A)
   - platform: modbus_controller
